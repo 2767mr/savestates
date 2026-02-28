@@ -1,5 +1,5 @@
 import { Injectable, Mod, terra } from '@project-selene/api';
-import { CONTROL_MAP, ControlConfig, g_storage, Game, KEY, PlayerModel, SaveFile } from '@project-selene/api/terra';
+import { CONTROL_MAP, ControlConfig, g_control, g_storage, Game, KEY, SaveFile, TeleportManager, Vec2, Vec3 } from '@project-selene/api/terra';
 
 
 const STATE_ID = '__savestate';
@@ -19,17 +19,11 @@ async function saveState() {
 
     const meta = {
         t: Date.now(),
-        mapName: terra.g_game?.lastLoadedMapName || null,
-        posArr: terra.g_player?.entity?.core?.pos?.getArray?.(),
-        mapInfo: {
-            name: activeMap.name,
-            path: activeMap.path,
-            id: activeMap.id,
-            uid: activeMap.uid,
-            room: activeMap.room,
-            roomName: activeMap.roomName,
-            mapName: activeMap.mapName,
-        }
+        marker: {
+            map: terra.g_game?.lastLoadedMapName || null,
+            pos: terra.g_player?.entity?.core?.pos?.getArray?.() || null,
+            face: terra.g_player?.entity?.core?.getFaceDir()?.getArray?.() || null,
+        },
     };
 
     const data: Record<string, any> = {};
@@ -54,8 +48,15 @@ async function readAndApplyMeta() {
     const tmp = new SaveFile(STATE_ID, {}, g_storage.slotPaths);
     const data = await tmp.loadData();
     const pendingMeta = data?.meta?.[META_KEY] || null;
-    forceReplaceMap = pendingMeta?.mapName || null;
-    forcePlayerPosition = pendingMeta?.posArr || null;
+    if (pendingMeta) {
+        forceReplaceMap = {
+            map: pendingMeta.marker.map,
+            marker: '',
+            isPos: true,
+            pos: (Vec3 as any).fromArray(pendingMeta.marker.pos),
+            face: (Vec2 as any).fromArray(pendingMeta.marker.face),
+        }
+    }
 
     g_storage.load(STATE_ID);
 }
@@ -65,36 +66,31 @@ function clearLoad() {
     if (finishTimer) { clearTimeout(finishTimer); finishTimer = null; }
 }
 
-let forceReplaceMap: string | null = null;
-class ForceReplaceMap extends Injectable(Game) {
-    loadMap(mapName: string, forceReload = false) {
+let forceReplaceMap: {
+    map: string;
+    marker: '';
+    isPos: true;
+    pos: unknown; //Vec3
+    face: unknown; //Vec2
+} | null = null;
+class ForceReplaceMap extends Injectable(TeleportManager) {
+    startTeleport() {
         if (forceReplaceMap) {
-            mapName = forceReplaceMap;
-            forceReplaceMap = null;
+            this.next.set(forceReplaceMap);
         }
-        super.update(mapName, forceReload);
+        super.startTeleport();
     }
 }
 
-let forcePlayerPosition: [number, number, number] | null = null;
-class ForcePlayerPosOnLoad extends Injectable(PlayerModel) {
-    onGameMapBuild() {
-        super.onGameMapBuild();
-        if (forcePlayerPosition) {
-            this.entity.core.pos.setObject(forcePlayerPosition);
-            forcePlayerPosition = null;
-        }
-    }
-}
 
 class Hotkeys extends Injectable(Game) {
     update() {
         super.update();
 
-        if (terra.INPUT_ACTIONS['savestates-mod-save']?.hasStarted() || terra.INPUT_ACTIONS['savestates-mod-save']?.hasEnded()) {
+        if (terra.INPUT_ACTIONS['savestates-mod-save']?.hasStarted()) {
             saveState().catch(() => { });
         }
-        if (terra.INPUT_ACTIONS['savestates-mod-load']?.hasStarted() || terra.INPUT_ACTIONS['savestates-mod-load']?.hasEnded()) {
+        if (terra.INPUT_ACTIONS['savestates-mod-load']?.hasStarted()) {
             try { loadState(); } catch { }
         }
     }
@@ -104,7 +100,6 @@ class Hotkeys extends Injectable(Game) {
 export default function main(mod: Mod) {
     mod.inject(Hotkeys);
     mod.inject(ForceReplaceMap);
-    mod.inject(ForcePlayerPosOnLoad);
 
     CONTROL_MAP.PC["savestates-mod-save"] = new ControlConfig({
         key1: KEY.K,
@@ -114,6 +109,7 @@ export default function main(mod: Mod) {
         key1: KEY.L,
         group: "DEFAULT",
     });
+    g_control.build();
 }
 
 export function unload() {
