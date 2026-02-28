@@ -1,48 +1,27 @@
 import { Injectable, Mod, terra } from '@project-selene/api';
-import { CONTROL_MAP, ControlConfig, g_storage, Game, KEY, SaveFile } from '@project-selene/api/terra';
+import { CONTROL_MAP, ControlConfig, g_storage, Game, KEY, PlayerModel, SaveFile } from '@project-selene/api/terra';
 
-// Savestates for Alabaster Dawn via Project Selene
-// Single-slot emulator-style savestate.
-// Hotkeys: K = save, L = load
-// Suppresses F6/F7/F8 (some builds crash on bug-report hotkeys).
-// Stores meta inside save file data.meta.__seleneSavestateMeta.
-// Restores position using core.setPosC (collision-aware).
 
 const STATE_ID = '__savestate';
 const META_KEY = '__seleneSavestateMeta';
 
-function applyPosition(meta: Record<string, any>) {
-    const core = terra.g_player?.entity?.core;
-    const arr = meta?.posArr;
-    if (!core || !arr)
-        return false;
-    return !!core.pos?.setObject?.(arr);
-}
-
-
-// load monitoring
-let loadInProgress = false;
-let loadStartedAt = 0;
-let forcedMapOnce = false;
-let rafHandle: number | null = null;
-let finishTimer: number | null = null;
-
 
 async function saveState() {
-    if (!g_storage || !SaveFile)
-        throw new Error('Missing g_storage or SaveFile');
-
-    if (g_storage.saving || g_storage.savingSystem)
+    if (g_storage.saving || g_storage.savingSystem) {
         return; // avoid racing normal save
-
+    }
 
     const activeMap = terra.g_game?.map?.active;
+    if (!activeMap) {
+        console.warn("No active map found, not saving savestate");
+        return;
+    }
 
     const meta = {
         t: Date.now(),
         mapName: terra.g_game?.lastLoadedMapName || null,
         posArr: terra.g_player?.entity?.core?.pos?.getArray?.(),
-        mapInfo: activeMap ? {
+        mapInfo: {
             name: activeMap.name,
             path: activeMap.path,
             id: activeMap.id,
@@ -50,11 +29,12 @@ async function saveState() {
             room: activeMap.room,
             roomName: activeMap.roomName,
             mapName: activeMap.mapName,
-        } : {}
+        }
     };
 
     const data: Record<string, any> = {};
     g_storage.assembleSaveData(data);
+
     data.meta ||= {};
     data.meta[META_KEY] = meta;
 
@@ -62,20 +42,9 @@ async function saveState() {
     await file.saveData();
 }
 
+let finishTimer: number | null = null;
 function loadState() {
-    if (!g_storage || !SaveFile) throw new Error('Missing g_storage or SaveFile');
-
-    if (loadInProgress) {
-        const age = Date.now() - loadStartedAt;
-        if (age <= 6000) return; // ignore repeated presses briefly
-        clearLoad(); // stuck, allow retry
-    }
-
-    loadInProgress = true;
-    loadStartedAt = Date.now();
-    forcedMapOnce = false;
-
-    finishTimer = setTimeout(() => { if (loadInProgress) clearLoad(); }, 9000);
+    finishTimer = setTimeout(clearLoad, 500);
 
     readAndApplyMeta().catch(() => clearLoad());
 }
@@ -85,41 +54,37 @@ async function readAndApplyMeta() {
     const tmp = new SaveFile(STATE_ID, {}, g_storage.slotPaths);
     const data = await tmp.loadData();
     const pendingMeta = data?.meta?.[META_KEY] || null;
+    forceReplaceMap = pendingMeta?.mapName || null;
+    forcePlayerPosition = pendingMeta?.posArr || null;
+
     g_storage.load(STATE_ID);
-
-    let f = 0;
-    const tick = () => {
-        if (!loadInProgress)
-            return;
-
-        const active = terra.g_game?.map?.active?.path;
-        const want = pendingMeta?.mapName;
-
-        if (want && !forcedMapOnce && f >= 2 && active !== want) {
-            forcedMapOnce = true;
-            try { terra.g_game?.loadMap?.(want); } catch { }
-        }
-
-        const mapOk = !want || active === want;
-        if (pendingMeta?.posArr && mapOk) {
-            // apply a few times to beat late placement
-            if (f === 2 || f === 6 || f === 12 || f === 18) applyPosition(pendingMeta);
-            if (f >= 24) { clearLoad(); return; }
-        }
-
-        if (f >= 240) { clearLoad(); return; }
-        f++;
-        rafHandle = requestAnimationFrame(tick);
-    };
-    rafHandle = requestAnimationFrame(tick);
 }
 
 function clearLoad() {
-    loadInProgress = false;
-    forcedMapOnce = false;
-    loadStartedAt = 0;
-    if (rafHandle) { cancelAnimationFrame(rafHandle); rafHandle = null; }
+    forceReplaceMap = null;
     if (finishTimer) { clearTimeout(finishTimer); finishTimer = null; }
+}
+
+let forceReplaceMap: string | null = null;
+class ForceReplaceMap extends Injectable(Game) {
+    loadMap(mapName: string, forceReload = false) {
+        if (forceReplaceMap) {
+            mapName = forceReplaceMap;
+            forceReplaceMap = null;
+        }
+        super.update(mapName, forceReload);
+    }
+}
+
+let forcePlayerPosition: [number, number, number] | null = null;
+class ForcePlayerPosOnLoad extends Injectable(PlayerModel) {
+    onGameMapBuild() {
+        super.onGameMapBuild();
+        if (forcePlayerPosition) {
+            this.entity.core.pos.setObject(forcePlayerPosition);
+            forcePlayerPosition = null;
+        }
+    }
 }
 
 class Hotkeys extends Injectable(Game) {
@@ -138,6 +103,8 @@ class Hotkeys extends Injectable(Game) {
 
 export default function main(mod: Mod) {
     mod.inject(Hotkeys);
+    mod.inject(ForceReplaceMap);
+    mod.inject(ForcePlayerPosOnLoad);
 
     CONTROL_MAP.PC["savestates-mod-save"] = new ControlConfig({
         key1: KEY.K,
