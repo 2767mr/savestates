@@ -1,5 +1,5 @@
-import { Mod, terra } from '@project-selene/api';
-import { g_storage, SaveFile } from '@project-selene/api/terra';
+import { Injectable, Mod, terra } from '@project-selene/api';
+import { CONTROL_MAP, ControlConfig, g_storage, Game, KEY, SaveFile } from '@project-selene/api/terra';
 
 // Savestates for Alabaster Dawn via Project Selene
 // Single-slot emulator-style savestate.
@@ -122,37 +122,31 @@ function clearLoad() {
     if (finishTimer) { clearTimeout(finishTimer); finishTimer = null; }
 }
 
-function isTypingTarget(t: EventTarget | null) {
-    return t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
-}
-function installHotkeys() {
-    const handler = (e: KeyboardEvent) => {
-        if (e.repeat || isTypingTarget(e.target))
-            return;
+class Hotkeys extends Injectable(Game) {
+    update() {
+        super.update();
 
-        // K save, L load
-        if (e.code === 'KeyK') {
-            e.preventDefault(); e.stopImmediatePropagation(); e.stopPropagation();
+        if (terra.INPUT_ACTIONS['savestates-mod-save']?.hasStarted() || terra.INPUT_ACTIONS['savestates-mod-save']?.hasEnded()) {
             saveState().catch(() => { });
-            return;
         }
-        if (e.code === 'KeyL') {
-            e.preventDefault(); e.stopImmediatePropagation(); e.stopPropagation();
+        if (terra.INPUT_ACTIONS['savestates-mod-load']?.hasStarted() || terra.INPUT_ACTIONS['savestates-mod-load']?.hasEnded()) {
             try { loadState(); } catch { }
-            return;
         }
-    };
-
-    // Capture phase for reliability
-    document.addEventListener('keydown', handler, true);
-    window.addEventListener('keydown', handler, true);
-    document.addEventListener('keyup', handler, true);
-    window.addEventListener('keyup', handler, true);
+    }
 }
+
 
 export default function main(mod: Mod) {
-    // best-effort init
-    installHotkeys();
+    mod.inject(Hotkeys);
+
+    CONTROL_MAP.PC["savestates-mod-save"] = new ControlConfig({
+        key1: KEY.K,
+        group: "DEFAULT",
+    });
+    CONTROL_MAP.PC["savestates-mod-load"] = new ControlConfig({
+        key1: KEY.L,
+        group: "DEFAULT",
+    });
 }
 
 export function unload() {
