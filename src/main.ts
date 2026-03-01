@@ -36,15 +36,7 @@ async function saveState() {
     await file.saveData();
 }
 
-let finishTimer: number | null = null;
-function loadState() {
-    finishTimer = setTimeout(clearLoad, 500);
-
-    readAndApplyMeta().catch(() => clearLoad());
-}
-
-
-async function readAndApplyMeta() {
+async function loadState() {
     const tmp = new SaveFile(STATE_ID, {}, g_storage.slotPaths);
     const data = await tmp.loadData();
     const pendingMeta = data?.meta?.[META_KEY] || null;
@@ -59,11 +51,11 @@ async function readAndApplyMeta() {
     }
 
     g_storage.load(STATE_ID);
-}
 
-function clearLoad() {
-    forceReplaceMap = null;
-    if (finishTimer) { clearTimeout(finishTimer); finishTimer = null; }
+    if (forceReplaceMap) {
+        console.warn("Force replace map was not applied, something probably went wrong with loading the savestate.");
+        forceReplaceMap = null;
+    }
 }
 
 let forceReplaceMap: {
@@ -77,6 +69,7 @@ class ForceReplaceMap extends Injectable(TeleportManager) {
     startTeleport() {
         if (forceReplaceMap) {
             this.next.set(forceReplaceMap);
+            forceReplaceMap = null;
         }
         super.startTeleport();
     }
@@ -91,7 +84,7 @@ class Hotkeys extends Injectable(Game) {
             saveState().catch(() => { });
         }
         if (terra.INPUT_ACTIONS['savestates-mod-load']?.hasStarted()) {
-            try { loadState(); } catch { }
+            loadState().catch(() => { });
         }
     }
 }
@@ -110,8 +103,4 @@ export default function main(mod: Mod) {
         group: "DEFAULT",
     });
     g_control.build();
-}
-
-export function unload() {
-    clearLoad();
 }
